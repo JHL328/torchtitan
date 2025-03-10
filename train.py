@@ -9,7 +9,12 @@ import time
 from datetime import timedelta
 
 import torch
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["WORLD_SIZE"] = "1"
+os.environ["LOCAL_RANK"] = "0"
+os.environ["RANK"] = "0"
+os.environ["MASTER_ADDR"] = "localhost"  # 添加这一行
+os.environ["MASTER_PORT"] = "29500"      # 添加这一行
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from torchtitan import utils
@@ -24,14 +29,14 @@ from torchtitan.parallelisms import ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.train_spec import get_train_spec
 from torchtitan.utils import device_module, device_type, import_module_from_path
-
+import pdb
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
-
+    pdb.set_trace()
     if job_config.experimental.custom_model_path:
         import_module_from_path(job_config.experimental.custom_model_path)
 
