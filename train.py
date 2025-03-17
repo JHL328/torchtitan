@@ -9,12 +9,6 @@ import time
 from datetime import timedelta
 
 import torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["WORLD_SIZE"] = "1"
-os.environ["LOCAL_RANK"] = "0"
-os.environ["RANK"] = "0"
-os.environ["MASTER_ADDR"] = "localhost"  # 添加这一行
-os.environ["MASTER_PORT"] = "29500"      # 添加这一行
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from torchtitan import utils
@@ -36,7 +30,8 @@ import pdb
 def main(job_config: JobConfig):
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
-    pdb.set_trace()
+    # if int(os.environ.get('RANK', '0')) == 0:
+    #     pdb.set_trace()
     if job_config.experimental.custom_model_path:
         import_module_from_path(job_config.experimental.custom_model_path)
 

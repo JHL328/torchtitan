@@ -126,15 +126,21 @@ class WandBLogger(BaseLogger):
     """Logger implementation for Weights & Biases."""
 
     def __init__(self, log_dir: str, tag: Optional[str] = None):
-        # Import wandb here to avoid startup import
         import wandb
-
+        import os
+        
         self.wandb = wandb
         self.tag = tag
-
+        
+        # 从环境变量获取密钥，如果没有则使用默认值
+        api_key = os.environ.get("WANDB_API_KEY", None)
+        
         self.wandb.init(
-            project="opt-attn",
+            project="linear-attn",
+            entity="haolong",
             dir=log_dir,
+            # 如果环境变量中有密钥则使用
+            key=api_key
         )
         logger.info("WandB logging enabled")
 

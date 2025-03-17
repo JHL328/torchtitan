@@ -10,6 +10,7 @@ set -ex
 # use envs as local overrides for convenience
 # e.g.
 # LOG_RANK=0,1 NGPU=4 ./run_llama_train.sh
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 NGPU=${NGPU:-"8"}
 LOG_RANK=${LOG_RANK:-0}
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/debug_model.toml"}

@@ -2,7 +2,7 @@
 
 # SLURM作业配置
 #SBATCH --partition=mbzuai          # 指定要使用的计算分区
-#SBATCH --job-name=training         # 作业名称
+#SBATCH --job-name=attention         # 作业名称
 #SBATCH --nodes=2                   # 请求2个计算节点
 #SBATCH --ntasks=2                  # 总共运行2个任务(每个节点1个)
 #SBATCH --gpus-per-task=8          # 每个任务分配8个GPU
@@ -21,6 +21,7 @@ cd /mbz/users/haolong.jia/attn/torchtitan  # 切换到项目目录
 # 设置环境变量
 export CUDA_DEVICE_MAX_CONNECTIONS=1  # 限制CUDA设备最大连接数
 export OMP_NUM_THREADS=1              # 设置OpenMP线程数为1
+export WANDB_API_KEY="7a43277c376f2b14ab11f153f74e8448b07aac7c" # 设置WANDB_API_KEY
 
 # 定义分布式训练参数
 NNODES=2                             # 节点数量
