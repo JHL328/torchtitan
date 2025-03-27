@@ -1,0 +1,66 @@
+# torchtitan Config.toml
+
+[job]
+dump_folder = "./outputs/llama3_1b_debug"
+description = "Llama 3 1B debug training"
+print_args = true
+use_for_integration_test = true
+
+[profiling]
+enable_profiling = true
+save_traces_folder = "profile_trace"
+profile_freq = 10
+enable_memory_snapshot = true
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+disable_color_printing = false
+enable_tensorboard = false
+save_tb_folder = "tb"
+enable_wandb = true
+
+[model]
+name = "llama3"
+flavor = "1B"
+norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
+# tokenizer_path = "/mbz/users/haolong.jia/opt/models/llama3/tokenizer.model"
+tokenizer_path = "./tests/assets/test_tiktoken.model"
+
+[optimizer]
+name = "AdamW"
+lr = 3e-4
+
+[training]
+batch_size = 2  # 减小批量以便调试
+seq_len = 1024  # 减小序列长度以加快调试
+warmup_steps = 2  # 减少预热步骤
+max_norm = 1.0  # grad norm clipping
+steps = 10  # 减少训练步骤以便快速调试
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1
+tensor_parallel_degree = 1
+compile = false
+dataset = "fineweb_edu_100B"  # 使用较小的测试数据集
+gradient_accumulation_steps = 1  # 减少梯度累积步骤
+
+[experimental]
+context_parallel_degree = 1
+pipeline_parallel_degree = 1
+enable_async_tensor_parallel = false
+
+[checkpoint]
+enable_checkpoint = false
+folder = "checkpoint_debug"
+interval_type = "steps"
+interval = 5
+model_weights_only = false
+export_dtype = "float32"
+async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
+
+[activation_checkpoint]
+mode = 'selective'  # ['none', 'selective', 'full']
+selective_ac_option = '2'  # 使用debug配置中的选项
+
+[float8]
+enable_float8_linear = false

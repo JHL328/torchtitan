@@ -4,9 +4,9 @@
 MODEL_NAME="llama"
 MODEL_FLAVOR="3b"
 CHECKPOINT_DIR="/mbz/users/haolong.jia/attn/torchtitan/output/checkpoint"
-OUTPUT_DIR="/mbz/users/haolong.jia/attn/torchtitan/converted_model"
+OUTPUT_DIR="/mbz/users/haolong.jia/attn/torchtitan/tmp"
 CONFIG_FILE="/mbz/users/haolong.jia/attn/torchtitan/train_configs/llama3_3b.toml"
-STEP=500
+STEP=1000  # 修改为已有的检查点步数
 MAX_POSITION_EMBEDDINGS=8192
 VOCAB_SIZE=128256  # 根据 Llama 3 的词汇量大小设置
 DTYPE="bfloat16"   # Llama 3 通常使用 bfloat16
@@ -15,7 +15,7 @@ DTYPE="bfloat16"   # Llama 3 通常使用 bfloat16
 function show_help {
     echo "用法: $0 [选项]"
     echo ""
-    echo "将 TorchTitan .distcp 检查点转换为 Hugging Face 格式"
+    echo "将 TorchTitan step-xxx 检查点转换为 Hugging Face 格式"
     echo ""
     echo "选项:"
     echo "  -h, --help                   显示此帮助信息"
@@ -84,11 +84,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 创建完整的检查点路径
-CHECKPOINT_PATH="${CHECKPOINT_DIR}/step-${STEP}.distcp"
+CHECKPOINT_PATH="${CHECKPOINT_DIR}/step-${STEP}"
 
 # 检查检查点是否存在
 if [ ! -d "$CHECKPOINT_PATH" ]; then
     echo "错误: 检查点目录 $CHECKPOINT_PATH 不存在"
+    exit 1
+fi
+
+# 检查目录中是否包含.distcp文件
+if [ $(find "$CHECKPOINT_PATH" -name "*.distcp" | wc -l) -eq 0 ]; then
+    echo "错误: 检查点目录 $CHECKPOINT_PATH 中没有找到.distcp文件"
     exit 1
 fi
 

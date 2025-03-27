@@ -12,12 +12,14 @@ from torchtitan.train_spec import register_train_spec, TrainSpec
 
 from .parallelize_llama import parallelize_llama
 from .pipeline_llama import pipeline_llama
+from .linear_llama import LinearTransformer, LinearAttention, LinearTransformerBlock
 
 __all__ = [
     "parallelize_llama",
     "pipeline_llama",
     "TransformerModelArgs",
     "Transformer",
+    "LinearTransformer",
     "llama3_configs",
 ]
 
@@ -25,6 +27,17 @@ __all__ = [
 llama3_configs = {
     "debugmodel": TransformerModelArgs(
         dim=256, n_layers=8, n_heads=16, rope_theta=500000
+    ),
+    "1B": TransformerModelArgs(
+        dim=2048,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        ffn_hidden_size=8192,
+        multiple_of=256,
+        rope_theta=500000.0,
+        max_seq_len=4096,
     ),
     "3B": TransformerModelArgs(
         dim=3072,

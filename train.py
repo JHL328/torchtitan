@@ -28,10 +28,21 @@ import pdb
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
+    """
+    主训练函数: 协调模型初始化、训练和评估的整个流程。
+    
+    Args:
+        job_config: JobConfig对象，包含所有训练配置参数
+    """
+    # 初始化日志系统
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
+    
+    # 在主节点(rank 0)设置调试断点，便于需要时调试
     # if int(os.environ.get('RANK', '0')) == 0:
     #     pdb.set_trace()
+    
+    # 如果指定了自定义模型路径，导入自定义模型模块
     if job_config.experimental.custom_model_path:
         import_module_from_path(job_config.experimental.custom_model_path)
 
@@ -44,33 +55,50 @@ def main(job_config: JobConfig):
     # take control of garbage collection to avoid stragglers
     gc_handler = utils.GarbageCollection(gc_freq=job_config.training.gc_freq)
 
-    # init distributed
+    #=========================================================
+    # 分布式训练初始化部分
+    #=========================================================
+    
+    # 获取总进程数
     world_size = int(os.environ["WORLD_SIZE"])
+    
+    # 配置并行维度（数据并行、张量并行、流水线并行等）
     parallel_dims = ParallelDims(
-        dp_shard=job_config.training.data_parallel_shard_degree,
-        dp_replicate=job_config.training.data_parallel_replicate_degree,
-        cp=job_config.experimental.context_parallel_degree,
-        tp=job_config.training.tensor_parallel_degree,
-        pp=job_config.experimental.pipeline_parallel_degree,
-        world_size=world_size,
-        enable_loss_parallel=not job_config.training.disable_loss_parallel,
+        dp_shard=job_config.training.data_parallel_shard_degree,     # 数据并行分片度
+        dp_replicate=job_config.training.data_parallel_replicate_degree,  # 数据并行复制度
+        cp=job_config.experimental.context_parallel_degree,          # 上下文并行度
+        tp=job_config.training.tensor_parallel_degree,               # 张量并行度
+        pp=job_config.experimental.pipeline_parallel_degree,         # 流水线并行度
+        world_size=world_size,                                       # 总进程数
+        enable_loss_parallel=not job_config.training.disable_loss_parallel,  # 是否并行计算损失
     )
+    
+    # 设置当前设备(GPU)
     device = torch.device(f"{device_type}:{int(os.environ['LOCAL_RANK'])}")
     device_module.set_device(device)
+    
+    # 初始化分布式通信后端
     utils.init_distributed(job_config)
     # initialize device memory monitor and get peak flops for MFU calculation
     device_memory_monitor = build_device_memory_monitor()
     gpu_peak_flops = utils.get_peak_flops(device_memory_monitor.device_name)
     logger.info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
 
-    # build meshes
+    #=========================================================
+    # 构建通信网络(Mesh)
+    #=========================================================
+    
+    # 构建世界通信网络
     world_mesh = parallel_dims.build_mesh(device_type=device_type)
+    
+    # 数据并行通信网络设置
     if parallel_dims.dp_enabled:
         dp_mesh = world_mesh["dp"]
         dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
     else:
         dp_degree, dp_rank = 1, 0
 
+    # 流水线并行通信网络设置
     if parallel_dims.pp_enabled:
         pp_mesh = world_mesh["pp"]
 
@@ -78,23 +106,36 @@ def main(job_config: JobConfig):
     utils.set_determinism(
         world_mesh, device, job_config.training.seed, job_config.training.deterministic
     )
+    
+    # 获取模型训练规范
     train_spec = get_train_spec(job_config.model.name)
 
-    # build tokenizer
+    #=========================================================
+    # 数据加载和预处理
+    #=========================================================
+    
+    # 获取对应模型的分词器类型
     tokenizer_type = model_name_to_tokenizer[train_spec.name]
+    
+    # 构建分词器
     tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
-    # build dataloader
+    
+    # 构建HuggingFace数据加载器
     data_loader = build_hf_data_loader(
-        job_config.training.dataset,
-        job_config.training.dataset_path,
-        tokenizer,
-        job_config.training.batch_size,
-        job_config.training.seq_len,
-        dp_degree,
-        dp_rank,
+        job_config.training.dataset,       # 数据集名称
+        job_config.training.dataset_path,  # 数据集路径
+        tokenizer,                         # 分词器
+        job_config.training.batch_size,    # 批次大小
+        job_config.training.seq_len,       # 序列长度
+        dp_degree,                         # 数据并行度
+        dp_rank,                           # 数据并行等级
     )
 
-    # build model (using meta init)
+    #=========================================================
+    # 模型构建部分
+    #=========================================================
+    
+    # 获取模型类和配置
     model_cls = train_spec.cls
     model_config = train_spec.config[job_config.model.flavor]
     # set the model configs from training inputs:
@@ -108,15 +149,17 @@ def main(job_config: JobConfig):
     logger.info(
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
     )
+    
+    # 在meta设备上初始化模型(节约内存的技术)
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
 
-    # a no-op hander if float8 is not enabled
+    # 处理Float8训练设置(非启用时为无操作)
     float8_handler = Float8Handler(job_config, parallel_dims)
     # swap to Float8Linear based on float8 configs
     float8_handler.convert_to_float8_training(model)
 
-    # log model size
+    # 记录模型参数量和每token的浮点运算数
     model_param_count = utils.get_num_params(model)
     num_flop_per_token = utils.get_num_flop_per_token(
         utils.get_num_params(model, exclude_embedding=True),
@@ -128,8 +171,9 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
-    # loss function to be shared by Pipeline Parallel and SPMD training
+    # 定义损失函数(与流水线并行和SPMD训练共享)
     def loss_fn(pred, labels):
+        """计算交叉熵损失"""
         return torch.nn.functional.cross_entropy(
             pred.flatten(0, 1).float(), labels.flatten(0, 1)
         )
@@ -140,16 +184,23 @@ def main(job_config: JobConfig):
 
     # move sharded model to CPU/GPU and initialize weights via DTensor
     if job_config.checkpoint.create_seed_checkpoint:
+        # 创建种子检查点时使用CPU
         init_device = "cpu"
         buffer_device = None
     elif job_config.training.enable_cpu_offload:
+        # 启用CPU卸载时，权重在CPU，缓冲区在GPU
         init_device = "cpu"
         buffer_device = device_type
     else:
+        # 默认情况下，所有都在GPU上
         init_device = device_type
         buffer_device = None
 
-    # apply parallelisms and initialization
+    #=========================================================
+    # 模型并行化与初始化
+    #=========================================================
+    
+    # 根据是否启用流水线并行选择不同的并行化策略
     if parallel_dims.pp_enabled:
         # apply PT-D Pipeline Parallel
         (
@@ -192,8 +243,15 @@ def main(job_config: JobConfig):
 
     # build optimizer after applying parallelisms to the model
     optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
+    
+    # 构建学习率调度器
     lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
 
+    #=========================================================
+    # 训练状态与检查点管理
+    #=========================================================
+    
+    # 创建训练状态跟踪对象
     train_state = TrainState()
 
     # load initial checkpoint
@@ -264,9 +322,12 @@ def main(job_config: JobConfig):
             train_state.step += 1
             gc_handler.run(train_state.step)
 
+            # 每个训练步骤开始前，清零梯度
             optimizers.zero_grad()
+            
+            # 内层循环 - 执行多个微批次，累积梯度
             for micro_step in range(job_config.training.gradient_accumulation_steps):
-                # get batch
+                # 获取一个微批次数据
                 data_load_start = time.perf_counter()
                 batch = next(data_iterator)
                 input_ids, labels = batch
@@ -320,7 +381,7 @@ def main(job_config: JobConfig):
                         loss = loss / job_config.training.gradient_accumulation_steps
                         loss.backward()
 
-            # clip gradients
+            # 所有微批次处理完毕后，应用梯度裁剪
             utils.clip_grad_norm_(
                 [p for m in model_parts for p in m.parameters()],
                 job_config.training.max_norm,
@@ -426,10 +487,12 @@ def main(job_config: JobConfig):
                     world_mesh=world_mesh,
                 )
 
+    # 训练结束处理
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
         time.sleep(2)
 
+    # 关闭指标记录器
     metric_logger.close()
     logger.info("Training completed")
 

@@ -13,12 +13,19 @@ set -ex
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 NGPU=${NGPU:-"8"}
 LOG_RANK=${LOG_RANK:-0}
-CONFIG_FILE=${CONFIG_FILE:-"./train_configs/debug_model.toml"}
+
+TOML_NAME=llama3_1b_debug
+CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 overrides=""
 if [ $# -ne 0 ]; then
     overrides="$*"
 fi
+
+export WANDB_API_KEY="7a43277c376f2b14ab11f153f74e8448b07aac7c"
+export WANDB_PROJECT="linear-attn"
+export WANDB_ENTITY="haolong"
+export WANDB_RUN_NAME="${TOML_NAME}"    
 
 PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
 torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \

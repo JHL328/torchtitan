@@ -132,15 +132,12 @@ class WandBLogger(BaseLogger):
         self.wandb = wandb
         self.tag = tag
         
-        # 从环境变量获取密钥，如果没有则使用默认值
-        api_key = os.environ.get("WANDB_API_KEY", None)
         
         self.wandb.init(
-            project="linear-attn",
-            entity="haolong",
+            project=os.getenv("WANDB_PROJECT"),
+            entity=os.getenv("WANDB_ENTITY"),
+            name=os.getenv("WANDB_RUN_NAME"),
             dir=log_dir,
-            # 如果环境变量中有密钥则使用
-            key=api_key
         )
         logger.info("WandB logging enabled")
 

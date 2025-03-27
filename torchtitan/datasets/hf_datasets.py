@@ -28,6 +28,9 @@ def _load_fineweb_edu_dataset(dataset_path: str):
     """Load C4 dataset with default configuration."""
     return load_dataset(dataset_path, split="train", streaming=True)
 
+def _load_fineweb_edu_100b_dataset(dataset_path: str):
+    """Load C4 dataset with default configuration."""
+    return load_dataset("parquet", data_files=dataset_path, split="train", streaming=True)
 
 def _process_c4_like_text(sample: Dict[str, Any]) -> str:
     """Process C4 dataset sample text."""
@@ -56,6 +59,11 @@ DATASETS = {
     "fineweb_edu": DatasetConfig(
         path="HuggingFaceFW/fineweb-edu",
         loader=_load_fineweb_edu_dataset,
+        text_processor=_process_c4_like_text,
+    ),
+    "fineweb_edu_100b": DatasetConfig(
+        path="/mbz/users/haolong.jia/opt/data/0323_sample_data/fw-100B-shuffled.parquet",
+        loader=_load_fineweb_edu_100b_dataset,
         text_processor=_process_c4_like_text,
     ),
 }

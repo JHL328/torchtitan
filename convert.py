@@ -9,6 +9,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.train_spec import get_train_spec
+import glob
 import pdb
 
 def parse_args():
@@ -16,7 +17,7 @@ def parse_args():
     定义并解析命令行参数。
     
     这个函数创建了一个参数解析器，用于接收以下关键参数:
-    - checkpoint_path: 要转换的.distcp检查点路径
+    - checkpoint_path: 要转换的step-xxx检查点目录路径
     - output_dir: 保存输出Hugging Face模型的目录
     - config_file: 训练期间使用的配置文件
     - model_name: 模型架构名称(默认"llama")
@@ -29,7 +30,7 @@ def parse_args():
         解析后的命令行参数
     """
     parser = argparse.ArgumentParser(description="Convert TorchTitan .distcp checkpoint to HuggingFace format")
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the .distcp checkpoint directory")
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the step-xxx checkpoint directory")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save HuggingFace model")
     parser.add_argument("--config_file", type=str, required=True, help="Path to the TorchTitan config file used for training")
     parser.add_argument("--model_name", type=str, default="llama", help="Model architecture name")
@@ -88,7 +89,7 @@ def get_dtype(dtype_name):
 
 def load_titan_checkpoint(args):
     """
-    使用TorchTitan的CheckpointManager加载.distcp检查点。
+    使用TorchTitan的CheckpointManager加载step-xxx目录中的模型检查点文件。
     
     详细逻辑:
     1. 设置基本的job_config，用于识别模型架构和大小
@@ -96,7 +97,7 @@ def load_titan_checkpoint(args):
     3. 创建TrainState对象，跟踪训练状态
     4. 在"meta"设备上创建空模型结构(不加载实际权重)
     5. 创建最小化的CheckpointManager，只加载模型部分
-    6. 从检查点路径提取步数(如step-500.distcp中的500)
+    6. 从检查点路径提取步数(如step-500目录名中的500)
     7. 加载检查点，排除不需要的组件(优化器、学习率调度器等)
     
     参数:
@@ -107,19 +108,26 @@ def load_titan_checkpoint(args):
     """
     print(f"Loading checkpoint from {args.checkpoint_path}")
     
-    # Setup minimal job config and train state
+    # 从检查点路径提取步数
+    step = int(os.path.basename(args.checkpoint_path).split('-')[1])
+    print(f"Detected checkpoint at step {step}")
+    
+    # 设置基本配置和训练状态
     job_config = setup_job_config(args)
+    job_config.checkpoint.folder = os.path.dirname(args.checkpoint_path)
+    
     train_spec = get_train_spec(job_config.model.name)
     train_state = TrainState()
     
-    # Create dummy model structure for loading
+    # 获取模型配置和类
     model_config = train_spec.config[job_config.model.flavor]
     model_cls = train_spec.cls
     
+    # 在meta设备上创建模型结构(不分配内存)
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
     
-    # Setup checkpoint manager with minimal components
+    # 设置检查点管理器
     checkpoint = CheckpointManager(
         dataloader=None,
         model_parts=[model],
@@ -129,11 +137,11 @@ def load_titan_checkpoint(args):
         job_config=job_config
     )
     
-    # Extract step number from checkpoint path
-    step = int(os.path.basename(args.checkpoint_path).split('-')[1].split('.')[0])
-    
-    # Load only model weights
-    checkpoint.load(step=step, exclude_keys=["optimizers", "lr_schedulers", "dataloader"])
+    # 加载检查点（传入step参数会寻找step-{step}目录）
+    checkpoint.load(
+        step=step, 
+        exclude_keys=["optimizers", "lr_schedulers", "dataloader"]
+    )
     
     print(f"Successfully loaded checkpoint at step {step}")
     return model, model_config
@@ -352,7 +360,7 @@ def main():
     这是整个转换流水线的控制函数，按顺序调用各个专门的函数完成转换任务。
     """
     # 运行时注释pdb
-    pdb.set_trace()
+    # pdb.set_trace()
     args = parse_args()
     
     # Load TorchTitan checkpoint
