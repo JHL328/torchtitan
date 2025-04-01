@@ -2,7 +2,7 @@
 
 # SLURM作业配置
 #SBATCH --partition=mbzuai          # 指定要使用的计算分区
-#SBATCH --job-name=llama3_1b       # 作业名称
+#SBATCH --job-name=llama3_1b_1_16       # 作业名称
 #SBATCH --nodes=4                   # 请求8个计算节点
 #SBATCH --ntasks=4                  # 总共运行8个任务(每个节点1个)
 #SBATCH --ntasks-per-node=1           # Run one task per node
@@ -10,9 +10,9 @@
 #SBATCH --cpus-per-task=224         # 每个任务分配224个CPU核心
 #SBATCH --mem=0                    # 内存设为0表示使用节点所有可用内存
 #SBATCH --gres=gpu:8               # 每个节点需要8个GPU资源
-#SBATCH --output=/mbz/users/haolong.jia/attn/logs/slurm_%x_%j.out  # 标准输出日志文件路径 (%x是作业名,%j是作业ID)
-#SBATCH --error=/mbz/users/haolong.jia/attn/logs/slurm_%x_%j.err   # 标准错误日志文件路径
-
+#SBATCH --output=/mbz/users/haolong.jia/attn/logs/%x_%j.out  # 标准输出日志文件路径 (%x是作业名,%j是作业ID)
+#SBATCH --error=/mbz/users/haolong.jia/attn/logs/%x_%j.err   # 标准错误日志文件路径
+#SBATCH --nodelist=g42-h100-instance-[147-148,153,111-113,068,085-087,105-106,108]
 # 加载必要的环境模块和激活conda环境
 module load cuda/12.4              # 加载CUDA 12.4
 source activate                    # 初始化conda
@@ -22,6 +22,7 @@ cd /mbz/users/haolong.jia/attn/torchtitan  # 切换到项目目录
 # 设置环境变量
 export CUDA_DEVICE_MAX_CONNECTIONS=1  # 限制CUDA设备最大连接数
 export OMP_NUM_THREADS=1              # 设置OpenMP线程数为1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"
 
 
 # 定义分布式训练参数
@@ -52,7 +53,7 @@ DISTRIBUTED_ARGS=(
 set -ex  # 打开shell的错误检查和命令回显
 
 # 设置配置文件路径
-TOML_NAME=llama3_1b
+TOML_NAME=llama3_1b_1_16
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 # 处理额外的命令行参数

@@ -9,9 +9,13 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.amp import autocast
+
+# Import logger
+from torchtitan.logging import logger
 
 # Import from the main model to reuse existing components
-from torchtitan.models.llama.model import TransformerModelArgs, apply_rotary_emb, repeat_kv, build_norm, FeedForward
+from torchtitan.models.llama.model import TransformerModelArgs, apply_rotary_emb, repeat_kv, build_norm, FeedForward, Transformer
 
 
 def max_neg_value(tensor):
@@ -22,87 +26,84 @@ def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
 
-def causal_linear_attention(q, k, v, bucket_size=64, eps=1e-6, mask=None):
+def causal_linear_attention(q, k, v, is_causal=True):
     """
-    Efficient causal linear attention using lucidrains method.
+    实现线性复杂度的因果注意力机制
+    
     Args:
-        q: query tensor [batch, heads, seq_len, head_dim]
-        k: key tensor [batch, heads, seq_len, head_dim]
-        v: value tensor [batch, heads, seq_len, head_dim]
-        bucket_size: bucket size for optimization of long sequences
-        eps: small constant for numerical stability
-        mask: optional attention mask
+        q (torch.Tensor): 查询张量 [batch_size, n_heads, seq_len, head_dim]
+        k (torch.Tensor): 键张量 [batch_size, n_heads, seq_len, head_dim]
+        v (torch.Tensor): 值张量 [batch_size, n_heads, seq_len, head_dim]
+        is_causal (bool): 是否应用因果掩码
         
     Returns:
-        output tensor [batch, heads, seq_len, head_dim]
+        torch.Tensor: 注意力输出 [batch_size, n_heads, seq_len, head_dim]
     """
-    b, h, n, e, dtype = *q.shape, q.dtype
-    bucket_size = min(bucket_size, n)
+    # 获取张量尺寸
+    batch_size, n_heads, seq_len, head_dim = q.shape
     
-    # optimization: ensure sequence length is divisible by bucket size
-    if n % bucket_size != 0:
-        padding = bucket_size - (n % bucket_size)
-        # pad tensors
-        q = F.pad(q, (0, 0, 0, padding), value=0.)
-        k = F.pad(k, (0, 0, 0, padding), value=0.)
-        v = F.pad(v, (0, 0, 0, padding), value=0.)
-        n = n + padding
-    
-    # use lucidrains feature mapping
-    q = q.softmax(dim=-1)
-    k = torch.exp(k).type(dtype).clone()
-    q = q * e ** -0.5
-    
-    # apply mask (if provided)
-    if mask is not None:
-        mask = mask[:, None, :, None]
-        k = k.masked_fill(~mask, 0.)
-        v = v.masked_fill(~mask, 0.)
-    
-    # bucket function: reshape sequence into buckets
-    def bucket_fn(x):
-        return x.reshape(*x.shape[:-2], -1, bucket_size, e)
-    
-    # convert queries, keys, values to bucket form
-    b_q, b_k, b_v = map(bucket_fn, (q, k, v))
-    
-    # compute cumulative sum of keys
-    b_k_sum = b_k.sum(dim=-2)
-    b_k_cumsum = b_k_sum.cumsum(dim=-2).type(dtype)
-    
-    # compute cumulative sum of k-v products (efficiently implements causality)
-    context = torch.einsum('bhund,bhune->bhude', b_k, b_v)
-    context = context.cumsum(dim=-3).type(dtype)
-    
-    # handle boundary conditions
-    if bucket_size > 1:
-        # pad to correctly handle offset
-        context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
-        # remove first element to get correct causal prefix
-        context = context[:, :, :-1]
+    # 如果不需要因果掩码，直接使用高效实现
+    if not is_causal:
+        # 对K应用列方向的softmax
+        k_softmax = F.softmax(k, dim=2)  # 沿序列长度维度
         
-        b_k_cumsum = F.pad(b_k_cumsum, (0, 0, 1, 0), value=0.)
-        b_k_cumsum = b_k_cumsum[:, :, :-1]
+        # 计算 K与V的乘积: (ρk(K)^T) * V
+        kv = torch.matmul(k_softmax.transpose(2, 3), v)
+        
+        # 对Q应用行方向的softmax
+        q_softmax = F.softmax(q, dim=-1)  # 沿头部维度
+        
+        # 计算最终结果: ρq(Q) * ((ρk(K)^T) * V)
+        return torch.matmul(q_softmax, kv)
     
-    # compute attention and normalize
-    D_inv = 1. / torch.einsum('bhud,bhund->bhun', b_k_cumsum, b_q).clamp(min=eps)
-    attn = torch.einsum('bhund,bhude,bhun->bhune', b_q, context, D_inv)
+    # 因果实现使用分块计算
+    output = torch.zeros_like(q)
+    chunk_size = 128  # 可调整的块大小
     
-    # reshape back to original shape and remove padding (if any)
-    out = attn.reshape(b, h, n, e)
-    if n > q.shape[2]:  # if any padding
-        out = out[:, :, :q.shape[2], :]
+    # 记录输入张量的数据类型
+    dtype = q.dtype
     
-    return out
+    for i in range(0, seq_len, chunk_size):
+        end_idx = min(i + chunk_size, seq_len)
+        
+        # 只处理当前块及其之前的序列
+        k_prefix = k[:, :, :end_idx, :]
+        v_prefix = v[:, :, :end_idx, :]
+        
+        # 使用torch.amp.autocast('cuda')减少内存使用，并指定与输入相同的类型
+        with torch.amp.autocast('cuda', dtype=dtype):
+            k_prefix_softmax = F.softmax(k_prefix, dim=2) # 列方向softmax
+            kv_chunk = torch.matmul(k_prefix_softmax.transpose(2, 3), v_prefix)
+        
+        # 处理当前块的查询
+        q_chunk = q[:, :, i:end_idx, :]
+        q_chunk_softmax = F.softmax(q_chunk, dim=-1)
+        
+        # 确保类型一致
+        result = torch.matmul(q_chunk_softmax, kv_chunk.to(dtype))
+        output[:, :, i:end_idx, :] = result
+        
+        # 主动清理不需要的中间变量
+        del k_prefix, v_prefix, k_prefix_softmax, kv_chunk
+        torch.cuda.empty_cache()
+    
+    return output
 
 
 class LinearAttention(nn.Module):
     """
-    Multi-head attention module using linear attention.
+    线性复杂度的多头注意力模块。
     
-    This class directly replaces the standard Attention class, but uses linear attention to reduce complexity.
+    Args:
+        model_args (TransformerModelArgs): 模型配置参数。
+        
+    Attributes:
+        n_heads (int): 查询头数量。
+        n_kv_heads (int): 键值头数量。
+        n_rep (int): 本地头重复次数。
+        head_dim (int): 每个注意力头的维度。
     """
-
+    
     def __init__(self, model_args: TransformerModelArgs):
         super().__init__()
         self.n_heads = model_args.n_heads
@@ -114,9 +115,7 @@ class LinearAttention(nn.Module):
         self.n_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads
         
-        # linear attention configuration
-        self.bucket_size = getattr(model_args, 'linear_attn_bucket_size', 64)
-
+        # 线性变换层，与标准Attention相同
         self.wq = nn.Linear(
             model_args.dim, model_args.n_heads * self.head_dim, bias=False
         )
@@ -125,163 +124,271 @@ class LinearAttention(nn.Module):
         self.wo = nn.Linear(
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
-
+    
     def init_weights(self, init_std: float):
-        """Initialize weights for the attention module."""
+        """初始化权重"""
         for linear in (self.wq, self.wk, self.wv):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
-
+    
     def forward(
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
     ):
         """
-        Forward pass of the linear attention module.
+        注意力模块的前向传播。
         
         Args:
-            x: input tensor
-            freqs_cis: precomputed frequency tensor for rotary embeddings
-            mask: optional attention mask
+            x (torch.Tensor): 输入张量。
+            freqs_cis (torch.Tensor): 预计算的频率张量。
             
         Returns:
-            output tensor after linear attention
+            torch.Tensor: 注意力后的输出张量。
         """
         bs, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-
+        
+        # 使用与标准Attention相同的形状处理
         xq = xq.view(bs, seqlen, -1, self.head_dim)
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
-
+        
+        # 应用旋转位置编码
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
-
-        # repeat keys/values heads (if n_kv_heads < n_heads)
-        keys = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
-        values = repeat_kv(xv, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
-
+        
+        # 重复键/值头（如果n_kv_heads < n_heads）
+        keys = repeat_kv(xk, self.n_rep)
+        values = repeat_kv(xv, self.n_rep)
+        
+        # 调整维度顺序与标准注意力相同
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-
-        # use efficient linear attention
-        output = causal_linear_attention(xq, xk, xv, bucket_size=self.bucket_size, mask=mask)
-            
+        
+        # 使用我们的线性注意力替代标准的缩放点积注意力
+        output = causal_linear_attention(xq, xk, xv, is_causal=True)
+        
+        # 调整回原始维度
         output = output.transpose(1, 2).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
         output = output.view(bs, seqlen, -1)
+        
         return self.wo(output)
 
 
 class LinearTransformerBlock(nn.Module):
     """
-    Transformer block using linear attention.
+    使用线性注意力的Transformer块
     
-    This class is a direct replacement for the standard TransformerBlock
-    but uses LinearAttention instead of standard Attention.
+    Args:
+        layer_id (int): 层ID
+        model_args (TransformerModelArgs): 模型配置参数
     """
     
     def __init__(self, layer_id: int, model_args: TransformerModelArgs):
         super().__init__()
-        self.attention = LinearAttention(model_args)
-        self.feed_forward = FeedForward(model_args)
+        self.n_heads = model_args.n_heads
+        self.dim = model_args.dim
+        # 使用LinearAttention替代标准Attention
+        self.attention = LinearAttention(model_args) 
+        self.feed_forward = FeedForward(
+            dim=model_args.dim,
+            ffn_hidden_size=model_args.ffn_hidden_size,
+            hidden_dim=4 * model_args.dim,
+            multiple_of=model_args.multiple_of,
+            ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+        )
         self.layer_id = layer_id
-        self.attention_norm = build_norm(model_args.dim, model_args.norm_eps, model_args.norm_type)
-        self.ffn_norm = build_norm(model_args.dim, model_args.norm_eps, model_args.norm_type)
+        self.num_layers = model_args.n_layers
 
-    def init_weights(self, ffn_init_std: float, attn_init_std: float):
-        """Initialize weights for the transformer block."""
-        self.attention.init_weights(attn_init_std)
-        self.feed_forward.init_weights(ffn_init_std)
+        self.attention_norm = build_norm(
+            model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
+        )
+        self.ffn_norm = build_norm(
+            model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
+        )
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+        if model_args.depth_init:
+            self.weight_init_std = 0.02 / (2 * (self.layer_id + 1)) ** 0.5
+        else:
+            self.weight_init_std = 0.02 / (2 * self.num_layers) ** 0.5
+            
+    def forward(
+        self,
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor,
+    ):
         """
-        Forward pass of the LinearTransformerBlock.
+        Transformer块的前向传播
         
         Args:
-            x: Input tensor.
-            freqs_cis: Precomputed frequency tensor for rotary embeddings.
+            x (torch.Tensor): 输入张量
+            freqs_cis (torch.Tensor): 预计算的频率张量
             
         Returns:
-            Output tensor after applying attention and feed-forward layers.
+            torch.Tensor: 处理后的输出张量
         """
-        # Apply attention with residual connection
         h = x + self.attention(self.attention_norm(x), freqs_cis)
-        # Apply feed-forward with residual connection
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
+        
+    def init_weights(self):
+        """初始化权重"""
+        for norm in (self.attention_norm, self.ffn_norm):
+            norm.reset_parameters()
+        self.attention.init_weights(self.weight_init_std)
+        self.feed_forward.init_weights(self.weight_init_std)
 
 
-class LinearTransformer(nn.Module):
+class MixedTransformer(Transformer):
     """
-    Transformer model with linear attention.
+    混合Transformer模型，允许部分层使用线性注意力机制
     
-    This class is a modified version of the standard Transformer that uses
-    LinearTransformerBlock with LinearAttention for more efficient processing
-    of long sequences.
+    Args:
+        model_args (TransformerModelArgs): 模型参数
     """
     
     def __init__(self, model_args: TransformerModelArgs):
-        super().__init__()
-        self.model_args = model_args
+        super().__init__(model_args)
+        self.linear_attn_ratio = getattr(model_args, 'linear_attn_ratio', 0.0)
         
-        # Standard components from the original Transformer
-        self.tok_embeddings = nn.Embedding(model_args.vocab_size, model_args.dim)
-        self.layers = nn.ModuleDict()
+        # 如果设置了线性注意力比例，替换部分层
+        if self.linear_attn_ratio > 0:
+            self._replace_layers_with_linear_attention()
+    
+    def _replace_layers_with_linear_attention(self):
+        """替换部分层为线性注意力实现"""
+        n_layers = self.model_args.n_layers
+        n_linear_layers = int(n_layers * self.linear_attn_ratio)
         
-        # Use LinearTransformerBlock instead of TransformerBlock
-        for layer_id in range(model_args.n_layers):
-            self.layers[str(layer_id)] = LinearTransformerBlock(layer_id, model_args)
-            
-        self.norm = build_norm(model_args.dim, model_args.norm_eps, model_args.norm_type)
-        self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
+        if n_linear_layers <= 0:
+            return
         
-        # Initialize weights
-        self.freqs_cis = self._precompute_freqs_cis()
+        # 确定要替换的层的索引（均匀分布）
+        if n_linear_layers == 1:
+            linear_indices = [n_layers // 2]  # 仅一层时放在中间
+        else:
+            step = n_layers / n_linear_layers
+            linear_indices = [n_layers - 1 - int((n_linear_layers - 1 - i) * step) for i in range(n_linear_layers)]
         
-        # Weight initialization is done in parallelize_llama
-
-    def _precompute_freqs_cis(self) -> torch.Tensor:
-        """Precompute frequencies for rotary embeddings."""
-        from torchtitan.models.llama.model import precompute_freqs_cis
-        return precompute_freqs_cis(
-            self.model_args.dim // self.model_args.n_heads,
-            self.model_args.max_seq_len,
-            self.model_args.rope_theta,
-        )
-
-    def forward(self, tokens: torch.Tensor):
-        """
-        Perform forward pass through the LinearTransformer model.
+        logger.info(f"将以下层替换为线性注意力: {linear_indices}")
         
-        Args:
-            tokens: Input token indices.
-            
-        Returns:
-            Output logits after applying the transformer model.
-        """
-        # Embedding layer
-        h = self.tok_embeddings(tokens) if self.tok_embeddings else tokens
+        # 替换选定的层
+        for idx in linear_indices:
+            layer_key = str(idx)
+            if layer_key in self.layers:
+                # 创建线性注意力层
+                linear_layer = LinearTransformerBlock(idx, self.model_args)
+                
+                # 初始化新层的权重
+                linear_layer.init_weights()
+                
+                # 替换层
+                self.layers[layer_key] = linear_layer
         
-        # Process through transformer layers
-        for layer in self.layers.values():
-            h = layer(h, self.freqs_cis)
-            
-        # Final normalization and output projection
-        h = self.norm(h) if self.norm else h
-        output = self.output(h) if self.output else h
-        return output
+        # 美化输出模型架构
+        line_length = 80
+        logger.info("=" * line_length)
+        logger.info(f"{'模型架构详情':^{line_length}}")
+        logger.info("-" * line_length)
+        logger.info(f"| {'层ID':^6} | {'层类型':^30} | {'参数数量':^20} | {'注意力类型':^15} |")
+        logger.info("-" * line_length)
+        
+        total_params = 0
+        for layer_idx in range(n_layers):
+            layer_key = str(layer_idx)
+            if layer_key in self.layers:
+                layer = self.layers[layer_key]
+                is_linear = isinstance(layer, LinearTransformerBlock)
+                layer_type = "LinearTransformerBlock" if is_linear else "TransformerBlock"
+                attn_type = "Linear" if is_linear else "Standard"
+                param_count = sum(p.numel() for p in layer.parameters())
+                total_params += param_count
+                
+                # 为线性注意力层添加高亮标记
+                prefix = "→ " if is_linear else "  "
+                logger.info(f"| {prefix}{layer_idx:<4} | {layer_type:<30} | {param_count:>20,} | {attn_type:^15} |")
+        
+        logger.info("-" * line_length)
+        
+        # 添加: 计算并打印统计信息
+        linear_count = sum(1 for layer in self.layers.values() if isinstance(layer, LinearTransformerBlock))
+        standard_count = sum(1 for layer in self.layers.values() if not isinstance(layer, LinearTransformerBlock))
+        linear_ratio = linear_count/len(self.layers)
+        
+        logger.info(f"| {'统计信息':^{line_length-4}} |")
+        logger.info("-" * line_length)
+        logger.info(f"| {'总层数':.<30}: {n_layers:>46} |")
+        logger.info(f"| {'线性注意力层数':.<30}: {linear_count:>46} |")
+        logger.info(f"| {'标准注意力层数':.<30}: {standard_count:>46} |")
+        logger.info(f"| {'实际线性层比例':.<30}: {linear_ratio:>45.4f} |")
+        logger.info(f"| {'总参数量':.<30}: {total_params:>46,} |")
+        logger.info("=" * line_length)
+    
+    def print_architecture(self):
+        """打印模型的完整架构"""
+        self._print_architecture_details()
+    
+    def _print_architecture_details(self):
+        """打印模型架构的详细信息"""
+        n_layers = self.model_args.n_layers
+        line_length = 80
+        
+        logger.info("=" * line_length)
+        logger.info(f"{'MixedTransformer 模型架构':^{line_length}}")
+        logger.info("-" * line_length)
+        logger.info(f"| {'配置参数':^{line_length-4}} |")
+        logger.info("-" * line_length)
+        logger.info(f"| {'总层数':.<30}: {n_layers:>46} |")
+        logger.info(f"| {'隐藏维度':.<30}: {self.model_args.dim:>46} |")
+        logger.info(f"| {'注意力头数':.<30}: {self.model_args.n_heads:>46} |")
+        logger.info(f"| {'KV头数':.<30}: {self.model_args.n_kv_heads or self.model_args.n_heads:>46} |")
+        logger.info(f"| {'配置线性注意力比例':.<30}: {self.linear_attn_ratio:>45.4f} |")
+        logger.info("-" * line_length)
+        logger.info(f"| {'层ID':^6} | {'层类型':^30} | {'参数数量':^20} | {'注意力类型':^15} |")
+        logger.info("-" * line_length)
+        
+        total_params = 0
+        for layer_idx in range(n_layers):
+            layer_key = str(layer_idx)
+            if layer_key in self.layers:
+                layer = self.layers[layer_key]
+                is_linear = isinstance(layer, LinearTransformerBlock)
+                layer_type = "LinearTransformerBlock" if is_linear else "TransformerBlock"
+                attn_type = "Linear" if is_linear else "Standard"
+                param_count = sum(p.numel() for p in layer.parameters())
+                total_params += param_count
+                
+                # 为线性注意力层添加高亮标记
+                prefix = "→ " if is_linear else "  "
+                logger.info(f"| {prefix}{layer_idx:<4} | {layer_type:<30} | {param_count:>20,} | {attn_type:^15} |")
+        
+        logger.info("-" * line_length)
+        
+        # 添加: 计算并打印统计信息
+        linear_count = sum(1 for layer in self.layers.values() if isinstance(layer, LinearTransformerBlock))
+        standard_count = sum(1 for layer in self.layers.values() if not isinstance(layer, LinearTransformerBlock))
+        linear_ratio = linear_count/len(self.layers)
+        
+        logger.info(f"| {'统计信息':^{line_length-4}} |")
+        logger.info("-" * line_length)
+        logger.info(f"| {'线性注意力层数':.<30}: {linear_count:>46} |")
+        logger.info(f"| {'标准注意力层数':.<30}: {standard_count:>46} |")
+        logger.info(f"| {'实际线性层比例':.<30}: {linear_ratio:>45.4f} |")
+        logger.info(f"| {'总参数量':.<30}: {total_params:>46,} |")
+        logger.info("=" * line_length)
 
     @classmethod
-    def from_model_args(cls, model_args: TransformerModelArgs) -> "LinearTransformer":
+    def from_model_args(cls, model_args: TransformerModelArgs) -> "MixedTransformer":
         """
-        Initialize a LinearTransformer model from a TransformerModelArgs object.
+        根据模型参数创建混合Transformer模型。
         
         Args:
-            model_args: Model configuration arguments.
+            model_args (TransformerModelArgs): 模型参数，包含linear_attn_ratio
             
         Returns:
-            LinearTransformer: Transformer model with linear attention.
+            MixedTransformer: 混合Transformer模型
         """
         return cls(model_args)
+
+

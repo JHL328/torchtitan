@@ -12,14 +12,15 @@ from torchtitan.train_spec import register_train_spec, TrainSpec
 
 from .parallelize_llama import parallelize_llama
 from .pipeline_llama import pipeline_llama
-from .linear_llama import LinearTransformer, LinearAttention, LinearTransformerBlock
+from .linear_llama import MixedTransformer
+
 
 __all__ = [
     "parallelize_llama",
     "pipeline_llama",
     "TransformerModelArgs",
     "Transformer",
-    "LinearTransformer",
+    "MixedTransformer",
     "llama3_configs",
 ]
 
@@ -27,6 +28,18 @@ __all__ = [
 llama3_configs = {
     "debugmodel": TransformerModelArgs(
         dim=256, n_layers=8, n_heads=16, rope_theta=500000
+    ),
+    "1B_1_16": TransformerModelArgs(
+        dim=2048,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        ffn_hidden_size=8192,
+        multiple_of=256,
+        rope_theta=500000.0,
+        max_seq_len=4096,
+        linear_attn_ratio=0.0625,
     ),
     "1B": TransformerModelArgs(
         dim=2048,
@@ -84,6 +97,18 @@ register_train_spec(
     TrainSpec(
         name="llama3",
         cls=Transformer,
+        config=llama3_configs,
+        parallelize_fn=parallelize_llama,
+        pipelining_fn=pipeline_llama,
+        build_optimizers_fn=build_optimizers,
+        build_lr_schedulers_fn=build_lr_schedulers,
+    )
+)
+
+register_train_spec(
+    TrainSpec(
+        name="llama3_linear",
+        cls=MixedTransformer,
         config=llama3_configs,
         parallelize_fn=parallelize_llama,
         pipelining_fn=pipeline_llama,
