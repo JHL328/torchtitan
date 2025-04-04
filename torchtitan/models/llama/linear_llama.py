@@ -13,7 +13,7 @@ from torch.amp import autocast
 
 # Import logger
 from torchtitan.logging import logger
-
+import math
 # Import from the main model to reuse existing components
 from torchtitan.models.llama.model import TransformerModelArgs, apply_rotary_emb, repeat_kv, build_norm, FeedForward, Transformer
 
@@ -28,7 +28,7 @@ def max_neg_value(tensor):
 
 def causal_linear_attention(q, k, v, is_causal=True):
     """
-    实现线性复杂度的因果注意力机制
+    实现线性复杂度的因果注意力机制，使用内存和计算优化的实现
     
     Args:
         q (torch.Tensor): 查询张量 [batch_size, n_heads, seq_len, head_dim]
@@ -41,53 +41,113 @@ def causal_linear_attention(q, k, v, is_causal=True):
     """
     # 获取张量尺寸
     batch_size, n_heads, seq_len, head_dim = q.shape
+    device, dtype = q.device, q.dtype
     
-    # 如果不需要因果掩码，直接使用高效实现
+    # 应用缩放因子并直接应用softmax - 内联操作减少中间变量
+    q = F.softmax(q * (head_dim ** -0.5), dim=-1)
+    k = F.softmax(k, dim=2)
+    
+    # 非因果情况的处理 - 直接计算
     if not is_causal:
-        # 对K应用列方向的softmax
-        k_softmax = F.softmax(k, dim=2)  # 沿序列长度维度
-        
-        # 计算 K与V的乘积: (ρk(K)^T) * V
-        kv = torch.matmul(k_softmax.transpose(2, 3), v)
-        
-        # 对Q应用行方向的softmax
-        q_softmax = F.softmax(q, dim=-1)  # 沿头部维度
-        
-        # 计算最终结果: ρq(Q) * ((ρk(K)^T) * V)
-        return torch.matmul(q_softmax, kv)
+        # 内联计算减少内存使用
+        return torch.einsum('bhnd,bhde->bhne', q, 
+                            torch.einsum('bhnd,bhne->bhde', k, v))
     
-    # 因果实现使用分块计算
-    output = torch.zeros_like(q)
-    chunk_size = 128  # 可调整的块大小
+    # ===== 因果线性注意力的高效实现 =====
     
-    # 记录输入张量的数据类型
-    dtype = q.dtype
+    # 根据序列长度选择最佳策略
+    # 自适应策略阈值
+    seq_len_threshold = 512
+    mem_efficient_threshold = 2048
     
-    for i in range(0, seq_len, chunk_size):
-        end_idx = min(i + chunk_size, seq_len)
+    # 短序列策略: 并行向量化 (≤512)
+    if seq_len <= seq_len_threshold:
+        # 创建下三角掩码并应用
+        mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).unsqueeze(0).unsqueeze(0)
         
-        # 只处理当前块及其之前的序列
-        k_prefix = k[:, :, :end_idx, :]
-        v_prefix = v[:, :, :end_idx, :]
+        # 计算外积并直接应用掩码 - 减少中间变量
+        kv_per_pos = torch.einsum('bhnd,bhme->bhnme', v, k.transpose(-2, -1))
         
-        # 使用torch.amp.autocast('cuda')减少内存使用，并指定与输入相同的类型
-        with torch.amp.autocast('cuda', dtype=dtype):
-            k_prefix_softmax = F.softmax(k_prefix, dim=2) # 列方向softmax
-            kv_chunk = torch.matmul(k_prefix_softmax.transpose(2, 3), v_prefix)
+        # 一次性计算，无需保存中间结果
+        output = torch.einsum('bhnd,bhde->bhne', q, 
+                             torch.sum(kv_per_pos * mask.unsqueeze(-1), dim=2))
         
-        # 处理当前块的查询
-        q_chunk = q[:, :, i:end_idx, :]
-        q_chunk_softmax = F.softmax(q_chunk, dim=-1)
-        
-        # 确保类型一致
-        result = torch.matmul(q_chunk_softmax, kv_chunk.to(dtype))
-        output[:, :, i:end_idx, :] = result
-        
-        # 主动清理不需要的中间变量
-        del k_prefix, v_prefix, k_prefix_softmax, kv_chunk
+        # 主动释放大型中间张量
+        del kv_per_pos, mask
         torch.cuda.empty_cache()
+        
+        return output
     
-    return output
+    # 中等长度序列策略: 优化的累积计算 (≤2048)
+    elif seq_len <= mem_efficient_threshold:
+        # 预先分配输出和累积状态
+        output = torch.zeros_like(v)
+        kv_sum = torch.zeros((batch_size, n_heads, head_dim, head_dim), 
+                             device=device, dtype=dtype)
+        
+        # 逐位置计算，但避免创建不必要的中间变量
+        for i in range(seq_len):
+            # 直接索引而不创建新张量
+            # 累积KV外积 - 避免使用原地操作
+            kv_i = torch.einsum('bhnd,bhne->bhde', 
+                               k[:, :, i:i+1], 
+                               v[:, :, i:i+1])
+            kv_sum = kv_sum + kv_i  # 非原地加法
+            
+            # 计算当前位置的输出
+            output[:, :, i:i+1] = torch.einsum('bhnd,bhde->bhne', 
+                                              q[:, :, i:i+1], 
+                                              kv_sum)
+        
+        return output
+    
+    # 长序列策略: 内存优化的块处理 (>2048)
+    else:
+        # 初始化输出张量
+        output = torch.zeros_like(v)
+        
+        # 优化块大小，平衡内存和计算效率
+        chunk_size = min(512, seq_len // 4)
+        if chunk_size < 32:  # 确保最小块大小
+            chunk_size = 32
+        
+        # 预分配累积状态
+        kv_sum = torch.zeros((batch_size, n_heads, head_dim, head_dim), 
+                            device=device, dtype=dtype)
+        
+        # 分块处理，减少内存峰值
+        for t_start in range(0, seq_len, chunk_size):
+            t_end = min(t_start + chunk_size, seq_len)
+            
+            # 如果不是第一个块，重新计算之前所有位置的累积KV
+            if t_start > 0:
+                # 避免原地操作，重新分配张量
+                kv_sum = torch.einsum('bhnd,bhne->bhde',
+                                     k[:, :, :t_start],
+                                     v[:, :, :t_start])
+            else:
+                # 使用新分配代替原地清零
+                kv_sum = torch.zeros((batch_size, n_heads, head_dim, head_dim), 
+                                    device=device, dtype=dtype)
+            
+            # 获取当前块的查询 - 避免每个位置都重新索引
+            q_chunk = q[:, :, t_start:t_end]
+            
+            # 处理当前块内的每个位置
+            for i in range(t_start, t_end):
+                # 计算当前位置KV并累加 - 避免原地操作
+                kv_i = torch.einsum('bhnd,bhne->bhde',
+                                   k[:, :, i:i+1],
+                                   v[:, :, i:i+1])
+                kv_sum = kv_sum + kv_i  # 非原地加法
+                
+                # 计算当前位置输出
+                idx = i - t_start
+                output[:, :, i:i+1] = torch.einsum('bhnd,bhde->bhne',
+                                                  q_chunk[:, :, idx:idx+1],
+                                                  kv_sum)
+        
+        return output
 
 
 class LinearAttention(nn.Module):
@@ -124,12 +184,24 @@ class LinearAttention(nn.Module):
         self.wo = nn.Linear(
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
+        
+        # 初始化时记录配置参数
+        self.use_gradient_checkpointing = False
+        self.use_checkpoint = False
     
     def init_weights(self, init_std: float):
         """初始化权重"""
         for linear in (self.wq, self.wk, self.wv):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+    
+    def _attention_forward(self, xq, xk, xv):
+        """
+        注意力核心计算，可被梯度检查点包装
+        """
+        # 应用线性注意力 - 使用行/列softmax实现
+        output = causal_linear_attention(xq, xk, xv, is_causal=True)
+        return output
     
     def forward(
         self,
@@ -147,6 +219,8 @@ class LinearAttention(nn.Module):
             torch.Tensor: 注意力后的输出张量。
         """
         bs, seqlen, _ = x.shape
+        
+        # 线性投影 - 这部分保持不变，不需要检查点
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
         
         # 使用与标准Attention相同的形状处理
@@ -166,13 +240,22 @@ class LinearAttention(nn.Module):
         xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         
-        # 使用我们的线性注意力替代标准的缩放点积注意力
-        output = causal_linear_attention(xq, xk, xv, is_causal=True)
+        # 使用梯度检查点减少内存使用
+        if self.use_checkpoint and self.training:
+            try:
+                from torch.utils.checkpoint import checkpoint
+                output = checkpoint(self._attention_forward, xq, xk, xv)
+            except:
+                # 如果检查点失败，回退到标准计算
+                output = self._attention_forward(xq, xk, xv)
+        else:
+            output = self._attention_forward(xq, xk, xv)
         
         # 调整回原始维度
         output = output.transpose(1, 2).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
         output = output.view(bs, seqlen, -1)
         
+        # 应用输出投影
         return self.wo(output)
 
 
@@ -228,6 +311,7 @@ class LinearTransformerBlock(nn.Module):
         Returns:
             torch.Tensor: 处理后的输出张量
         """
+        # 使用残差连接
         h = x + self.attention(self.attention_norm(x), freqs_cis)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
@@ -272,6 +356,7 @@ class MixedTransformer(Transformer):
             linear_indices = [n_layers - 1 - int((n_linear_layers - 1 - i) * step) for i in range(n_linear_layers)]
         
         logger.info(f"将以下层替换为线性注意力: {linear_indices}")
+        logger.info(f"总层数: {n_layers}, 线性层数: {len(linear_indices)}, 期望比例: {self.linear_attn_ratio:.4f}")
         
         # 替换选定的层
         for idx in linear_indices:
@@ -285,45 +370,15 @@ class MixedTransformer(Transformer):
                 
                 # 替换层
                 self.layers[layer_key] = linear_layer
+                
+                # 在多节点环境中，手动触发垃圾回收以减少内存峰值
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         # 美化输出模型架构
-        line_length = 80
-        logger.info("=" * line_length)
-        logger.info(f"{'模型架构详情':^{line_length}}")
-        logger.info("-" * line_length)
-        logger.info(f"| {'层ID':^6} | {'层类型':^30} | {'参数数量':^20} | {'注意力类型':^15} |")
-        logger.info("-" * line_length)
-        
-        total_params = 0
-        for layer_idx in range(n_layers):
-            layer_key = str(layer_idx)
-            if layer_key in self.layers:
-                layer = self.layers[layer_key]
-                is_linear = isinstance(layer, LinearTransformerBlock)
-                layer_type = "LinearTransformerBlock" if is_linear else "TransformerBlock"
-                attn_type = "Linear" if is_linear else "Standard"
-                param_count = sum(p.numel() for p in layer.parameters())
-                total_params += param_count
-                
-                # 为线性注意力层添加高亮标记
-                prefix = "→ " if is_linear else "  "
-                logger.info(f"| {prefix}{layer_idx:<4} | {layer_type:<30} | {param_count:>20,} | {attn_type:^15} |")
-        
-        logger.info("-" * line_length)
-        
-        # 添加: 计算并打印统计信息
-        linear_count = sum(1 for layer in self.layers.values() if isinstance(layer, LinearTransformerBlock))
-        standard_count = sum(1 for layer in self.layers.values() if not isinstance(layer, LinearTransformerBlock))
-        linear_ratio = linear_count/len(self.layers)
-        
-        logger.info(f"| {'统计信息':^{line_length-4}} |")
-        logger.info("-" * line_length)
-        logger.info(f"| {'总层数':.<30}: {n_layers:>46} |")
-        logger.info(f"| {'线性注意力层数':.<30}: {linear_count:>46} |")
-        logger.info(f"| {'标准注意力层数':.<30}: {standard_count:>46} |")
-        logger.info(f"| {'实际线性层比例':.<30}: {linear_ratio:>45.4f} |")
-        logger.info(f"| {'总参数量':.<30}: {total_params:>46,} |")
-        logger.info("=" * line_length)
+        self._print_architecture_details()
     
     def print_architecture(self):
         """打印模型的完整架构"""
