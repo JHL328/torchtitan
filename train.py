@@ -170,7 +170,7 @@ def main(job_config: JobConfig):
         f"{color.blue}Model {train_spec.name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
-
+    print("--------------------------------special--------------------------------")
     # 定义损失函数(与流水线并行和SPMD训练共享)
     def loss_fn(pred, labels):
         """计算交叉熵损失"""

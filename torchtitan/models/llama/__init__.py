@@ -7,6 +7,7 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved.
 
 from torchtitan.models.llama.model import Transformer, TransformerModelArgs
+from torchtitan.models.llama.nsa import NSATransformer, NSATransformerModelArgs
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.train_spec import register_train_spec, TrainSpec
 
@@ -19,7 +20,9 @@ __all__ = [
     "parallelize_llama",
     "pipeline_llama",
     "TransformerModelArgs",
+    "NSATransformerModelArgs",
     "Transformer",
+    "NSATransformer",
     "MixedTransformer",
     "llama3_configs",
 ]
@@ -29,7 +32,7 @@ llama3_configs = {
     "debugmodel": TransformerModelArgs(
         dim=256, n_layers=8, n_heads=16, rope_theta=500000
     ),
-    "1B_16_16": TransformerModelArgs(
+    "nsa_1B_debug_8_16": NSATransformerModelArgs(
         dim=2048,
         n_layers=16,
         n_heads=32,
@@ -39,7 +42,44 @@ llama3_configs = {
         multiple_of=256,
         rope_theta=500000.0,
         max_seq_len=4096,
-        linear_attn_ratio=1,
+        use_native_sparse_attention=True,
+        nsa_ratio=0.5,
+        nsa_block_size=64,
+        nsa_num_blocks=16,
+        nsa_window_size=0,
+        nsa_qkv_bias=False,
+    ),
+    "nsa_1B_8_16": NSATransformerModelArgs(
+        dim=2048,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        ffn_hidden_size=8192,
+        multiple_of=256,
+        rope_theta=500000.0,
+        max_seq_len=4096,
+        use_native_sparse_attention=True,
+        nsa_ratio=0.5,
+        nsa_block_size=64,
+        nsa_num_blocks=16,
+        nsa_window_size=64,
+    ),
+    "nsa_1B_16_16": NSATransformerModelArgs(
+        dim=2048,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        ffn_dim_multiplier=1.3,
+        ffn_hidden_size=8192,
+        multiple_of=256,
+        rope_theta=500000.0,
+        max_seq_len=4096,
+        use_native_sparse_attention=True,
+        nsa_ratio=1.0,
+        nsa_block_size=64,
+        nsa_num_blocks=16,
+        nsa_window_size=64,
     ),
     "1B_12_16": TransformerModelArgs(
         dim=2048,
@@ -51,7 +91,7 @@ llama3_configs = {
         multiple_of=256,
         rope_theta=500000.0,
         max_seq_len=4096,
-        linear_attn_ratio=0.75,
+        # linear_attn_ratio=0.75,
     ),
     "1B_8_16": TransformerModelArgs(
         dim=2048,
@@ -63,7 +103,7 @@ llama3_configs = {
         multiple_of=256,
         rope_theta=500000.0,
         max_seq_len=4096,
-        linear_attn_ratio=0.5,
+        # linear_attn_ratio=0.5,
     ),
     "1B_4_16": TransformerModelArgs(
         dim=2048,
@@ -75,7 +115,7 @@ llama3_configs = {
         multiple_of=256,
         rope_theta=500000.0,
         max_seq_len=4096,
-        linear_attn_ratio=0.25,
+        # linear_attn_ratio=0.25,
     ),
     "1B_1_16": TransformerModelArgs(
         dim=2048,
@@ -87,7 +127,7 @@ llama3_configs = {
         multiple_of=256,
         rope_theta=500000.0,
         max_seq_len=4096,
-        linear_attn_ratio=0.0625,
+        #  linear_attn_ratio=0.0625,
     ),
     "1B": TransformerModelArgs(
         dim=2048,
@@ -157,6 +197,18 @@ register_train_spec(
     TrainSpec(
         name="llama3_linear",
         cls=MixedTransformer,
+        config=llama3_configs,
+        parallelize_fn=parallelize_llama,
+        pipelining_fn=pipeline_llama,
+        build_optimizers_fn=build_optimizers,
+        build_lr_schedulers_fn=build_lr_schedulers,
+    )
+)
+
+register_train_spec(
+    TrainSpec(
+        name="llama3_nsa",
+        cls=NSATransformer,
         config=llama3_configs,
         parallelize_fn=parallelize_llama,
         pipelining_fn=pipeline_llama,

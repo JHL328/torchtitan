@@ -1,8 +1,8 @@
 # torchtitan Config.toml
 
 [job]
-dump_folder = "./outputs/llama3_1b_debug"
-description = "Llama 3 1B debug training"
+dump_folder = "./outputs/llama3_nsa_debug"
+description = "Llama 3 NSA debug training"
 print_args = true
 use_for_integration_test = true
 
@@ -21,12 +21,10 @@ save_tb_folder = "tb"
 enable_wandb = true
 
 [model]
-# name = "llama3"
-# flavor = "1B"
-name = "llama3_linear"
-flavor = "1B_1_16"
-norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
-# tokenizer_path = "/mbz/users/haolong.jia/opt/models/llama3/tokenizer.model"
+# 使用新的NSA模型
+name = "llama3_nsa"
+flavor = "nsa_1B_debug_8_16"
+norm_type = "rmsnorm"  
 tokenizer_path = "./tests/assets/test_tiktoken.model"
 
 [optimizer]
@@ -53,7 +51,7 @@ enable_async_tensor_parallel = false
 
 [checkpoint]
 enable_checkpoint = false
-folder = "checkpoint_debug"
+folder = "checkpoint_nsa_debug"
 interval_type = "steps"
 interval = 5
 model_weights_only = false
@@ -65,4 +63,4 @@ mode = 'selective'  # ['none', 'selective', 'full']
 selective_ac_option = '2'  # 使用debug配置中的选项
 
 [float8]
-enable_float8_linear = false
+enable_float8_linear = false 

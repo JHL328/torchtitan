@@ -1,6 +1,6 @@
 [job]
-dump_folder = "./outputs/llama3_1b_8_16"
-description = "Llama 3 1B with linear attention (8:16 ratio)"
+dump_folder = "./outputs/nsa_1b_16_16"
+description = "llama3 with NSA, ratio 1.0 (16 NSA block)"
 
 [profiling]
 enable_profiling = true
@@ -14,8 +14,8 @@ save_tb_folder = "tb"
 enable_wandb = true
 
 [model]
-name = "llama3_linear"
-flavor = "1B_8_16"
+name = "llama3_nsa"
+flavor = "nsa_1B_16_16"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
 tokenizer_path = "/mbz/users/haolong.jia/opt/models/llama3/tokenizer.model"
 

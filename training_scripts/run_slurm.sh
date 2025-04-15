@@ -2,7 +2,7 @@
 
 # SLURM作业配置
 #SBATCH --partition=mbzuai          # 指定要使用的计算分区
-#SBATCH --job-name=llama3_1b_8_16       # 作业名称
+#SBATCH --job-name=llama3_nsa       # 作业名称
 #SBATCH --nodes=4                   # 请求8个计算节点
 #SBATCH --ntasks=4                  # 总共运行8个任务(每个节点1个)
 #SBATCH --ntasks-per-node=1           # Run one task per node
@@ -12,7 +12,7 @@
 #SBATCH --gres=gpu:8               # 每个节点需要8个GPU资源
 #SBATCH --output=/mbz/users/haolong.jia/attn/logs/%x_%j.out  # 标准输出日志文件路径 (%x是作业名,%j是作业ID)
 #SBATCH --error=/mbz/users/haolong.jia/attn/logs/%x_%j.err   # 标准错误日志文件路径
-#SBATCH --nodelist=g42-h100-instance-[210-213,216,219-221,225-239,241-242,245,147-148,153,111-113,068,085-087,105-106,108]
+#SBATCH --nodelist=g42-h100-instance-[220-221,231-234,237-238,241-246]
 # 加载必要的环境模块和激活conda环境
 module load cuda/12.4              # 加载CUDA 12.4
 source activate                    # 初始化conda
@@ -24,6 +24,15 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1  # 限制CUDA设备最大连接数
 export OMP_NUM_THREADS=1              # 设置OpenMP线程数为1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"
 
+# # 优化NCCL通信设置
+# export NCCL_DEBUG=INFO                # 启用NCCL调试信息，帮助排查问题
+# export NCCL_BUFFSIZE=16777216         # 增加NCCL缓冲区大小到16MB (默认通常是4MB)
+# # export NCCL_SOCKET_IFNAME=eth0      # 注释掉这行，让NCCL自动选择网络接口
+# export NCCL_IB_DISABLE=0              # 确保InfiniBand支持启用
+# export NCCL_P2P_DISABLE=0             # 确保节点间P2P通信启用
+# export NCCL_MIN_NCHANNELS=8           # 增加最小通道数
+# export NCCL_NSOCKS_PERTHREAD=8        # 每个线程套接字数
+# export NCCL_RINGS_CHECK_TIMEOUT=45    # 增加环检查超时时间
 
 # 定义分布式训练参数
 NNODES=4                             # 改为4，与SLURM请求节点数匹配
@@ -53,7 +62,7 @@ DISTRIBUTED_ARGS=(
 set -ex  # 打开shell的错误检查和命令回显
 
 # 设置配置文件路径
-TOML_NAME=llama3_1b_8_16
+TOML_NAME=nsa_16_16
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 # 处理额外的命令行参数

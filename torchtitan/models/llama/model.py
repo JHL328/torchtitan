@@ -36,9 +36,6 @@ class TransformerModelArgs(BaseModelArgs):
     # `False`, each uses the total number of transformer blocks
     depth_init: bool = True
     norm_type: str = "rmsnorm"
-    # 添加线性注意力比例参数
-    linear_attn_ratio: float = 0.0  # 默认为0，不使用线性注意力
-
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """
