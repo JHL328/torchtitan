@@ -1,0 +1,3 @@
+[submodule "native-sparse-attention-pytorch"]
+	path = native-sparse-attention-pytorch
+	url = https://github.com/lucidrains/native-sparse-attention-pytorch.git
