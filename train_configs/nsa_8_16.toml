@@ -1,6 +1,6 @@
 [job]
-dump_folder = "./outputs/llama3_1b_1_16"
-description = "Llama 3 1B with linear attention (1:16 ratio)"
+dump_folder = "./outputs/nsa_8_16"
+description = "llama3 with NSA, ratio 0.5 (8 NSA block)"
 
 [profiling]
 enable_profiling = true
@@ -14,10 +14,10 @@ save_tb_folder = "tb"
 enable_wandb = true
 
 [model]
-name = "llama3_linear"
-flavor = "1B_4_16"
+name = "llama3_nsa"
+flavor = "nsa_1B_8_16"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
-tokenizer_path = "/mbz/users/haolong.jia/opt/models/llama3/tokenizer.model"
+tokenizer_path = "/lustrefs/users/haolong.jia/train/attn/tokenizer/tokenizer.model"
 
 
 [optimizer]
@@ -25,7 +25,7 @@ name = "AdamW"
 lr = 3e-4
 
 [training]
-batch_size = 4 # macro_batch_size
+batch_size = 8 # macro_batch_size
 seq_len = 4096
 warmup_steps = 2000  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
@@ -35,7 +35,7 @@ data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
 compile = false
 dataset = "fineweb_edu_100B"
-gradient_accumulation_steps = 4 # 4 * 32 * 4 = 512
+gradient_accumulation_steps = 8 # 4 * 32 * 4 = 512
 
 [experimental]
 context_parallel_degree = 1

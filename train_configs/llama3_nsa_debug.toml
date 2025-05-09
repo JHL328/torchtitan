@@ -25,7 +25,7 @@ enable_wandb = true
 name = "llama3_nsa"
 flavor = "nsa_1B_debug_8_16"
 norm_type = "rmsnorm"  
-tokenizer_path = "./tests/assets/test_tiktoken.model"
+tokenizer_path = "/lustrefs/users/haolong.jia/train/attn/tokenizer/tokenizer.model"
 
 [optimizer]
 name = "AdamW"

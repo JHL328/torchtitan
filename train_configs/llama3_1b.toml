@@ -17,7 +17,7 @@ enable_wandb = true
 name = "llama3"
 flavor = "1B"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
-tokenizer_path = "/mbz/users/haolong.jia/opt/models/llama3/tokenizer.model"
+tokenizer_path = "/lustrefs/users/haolong.jia/train/attn/tokenizer/tokenizer.model"
 
 [optimizer]
 name = "AdamW"
