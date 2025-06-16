@@ -7,7 +7,7 @@
 
 # SLURM作业配置
 #SBATCH --partition=main          # 指定要使用的计算分区
-#SBATCH --job-name=nsa_16_16       # 作业名称
+#SBATCH --job-name=nsa_8_16       # 作业名称
 #SBATCH --nodes=1                   # 请求1个计算节点
 #SBATCH --ntasks=1                  # 总共运行1个任务
 #SBATCH --ntasks-per-node=1         # 每个节点1个任务
@@ -32,8 +32,8 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"
 NGPU=${NGPU:-"8"}  
 LOG_RANK=${LOG_RANK:-0}
 
-# 设置配置文件路径 - 使用一个为单节点优化过的配置文件，批次大小或梯度累积步数应该增加4倍
-TOML_NAME=nsa_16_16
+
+TOML_NAME=nsa_8_16
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 overrides=""

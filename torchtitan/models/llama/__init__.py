@@ -13,7 +13,6 @@ from torchtitan.train_spec import register_train_spec, TrainSpec
 
 from .parallelize_llama import parallelize_llama
 from .pipeline_llama import pipeline_llama
-from .linear_llama import MixedTransformer
 
 
 __all__ = [
@@ -23,7 +22,6 @@ __all__ = [
     "NSATransformerModelArgs",
     "Transformer",
     "NSATransformer",
-    "MixedTransformer",
     "llama3_configs",
 ]
 
@@ -80,6 +78,18 @@ llama3_configs = {
         nsa_block_size=64,
         nsa_num_blocks=16,
         nsa_window_size=64,
+        nsa_qkv_bias=False,
+        use_triton_kernel=True,
+        compress_block_sliding_stride=4,
+        compress_block_overlap_len=0,
+        num_compressed_mem_kv=1,
+        causal=True,
+        norm=True,
+        use_diff_topk=False,
+        query_heads_share_selected_kv=True,
+        compress_mlp=None,
+        compress_mlp_expand_factor=1.0,
+        strategy_combine_mlp=None,
     ),
     "nsa_1B_16_16": NSATransformerModelArgs(
         dim=2048,
@@ -209,17 +219,6 @@ register_train_spec(
     )
 )
 
-register_train_spec(
-    TrainSpec(
-        name="llama3_linear",
-        cls=MixedTransformer,
-        config=llama3_configs,
-        parallelize_fn=parallelize_llama,
-        pipelining_fn=pipeline_llama,
-        build_optimizers_fn=build_optimizers,
-        build_lr_schedulers_fn=build_lr_schedulers,
-    )
-)
 
 register_train_spec(
     TrainSpec(

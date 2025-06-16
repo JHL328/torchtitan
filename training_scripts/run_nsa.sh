@@ -14,8 +14,8 @@ export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 NGPU=${NGPU:-"8"}
 LOG_RANK=${LOG_RANK:-0}
 
-TOML_NAME=llama3_1b_debug
-flavor=1B_1_16
+TOML_NAME=nsa_8_16
+flavor=8_16
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 overrides=""
