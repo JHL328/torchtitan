@@ -56,13 +56,11 @@ class NSATransformerModelArgs(BaseModelArgs):
     # NSA-specific (完整支持SparseAttention参数)
     use_native_sparse_attention: bool = True
     nsa_ratio: float = 0.5
-    nsa_block_size: int = 64
-    nsa_num_blocks: int = 16
-    nsa_window_size: int = 0
-    nsa_qkv_bias: bool = False
+    compress_block_size: int = 64
+    num_selected_blocks: int = 16
+    sliding_window_size: int = 0
     use_triton_kernel: bool = False
     compress_block_sliding_stride: int = 4
-    compress_block_overlap_len: int = 0
     num_compressed_mem_kv: int = 1
     causal: bool = True
     norm: bool = True
@@ -162,12 +160,12 @@ class NSATransformer(nn.Module, ModelProtocol):
                     dim=model_args.dim,
                     dim_head=model_args.dim // model_args.n_heads,
                     heads=model_args.n_heads,
-                    kv_heads=model_args.n_kv_heads or model_args.n_heads,
-                    sliding_window_size=model_args.nsa_window_size,
-                    compress_block_size=model_args.nsa_block_size,
+                    sliding_window_size=model_args.sliding_window_size,
+                    compress_block_size=model_args.compress_block_size,
                     compress_block_sliding_stride=model_args.compress_block_sliding_stride,
-                    selection_block_size=model_args.nsa_block_size,
-                    num_selected_blocks=model_args.nsa_num_blocks,
+                    selection_block_size=model_args.compress_block_size,
+                    num_selected_blocks=model_args.num_selected_blocks,
+                    kv_heads=model_args.n_kv_heads or model_args.n_heads,
                     num_compressed_mem_kv=model_args.num_compressed_mem_kv,
                     causal=model_args.causal,
                     norm=model_args.norm,

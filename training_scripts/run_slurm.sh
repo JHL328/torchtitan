@@ -1,17 +1,18 @@
 #!/bin/bash
 
 # SLURM configuration
-#SBATCH --partition=main          # 指定要使用的计算分区
+#SBATCH --partition=lowprio
+#SBATCH --qos=lowprio
 #SBATCH --job-name=eval       # 作业名称
-#SBATCH --nodes=8                   # 请求8个计算节点
-#SBATCH --ntasks=8                  # 总共运行8个任务(每个节点1个)
+#SBATCH --nodes=2                  # 请求2个计算节点
+#SBATCH --ntasks=2                  # 总共运行2个任务(每个节点1个)
 #SBATCH --ntasks-per-node=1           # Run one task per node
 #SBATCH --gpus-per-task=8          # 每个任务分配8个GPU
 #SBATCH --cpus-per-task=96         # 每个任务分配96个CPU核心
 #SBATCH --mem=500G                    # 500G memory
 #SBATCH --gres=gpu:8               # 每个节点需要8个GPU资源
-#SBATCH --output=/mnt/weka/home/haolong.jia/attn/slurm/nsa_16_16.out  # 标准输出日志文件路径 (%x是作业名,%j是作业ID)
-#SBATCH --error=/mnt/weka/home/haolong.jia/attn/slurm/nsa_16_16.err   # 标准错误日志文件路径
+#SBATCH --output=/mnt/weka/home/haolong.jia/attn/slurm/nsa_8_16_mid.out  # 标准输出日志文件路径 (%x是作业名,%j是作业ID)
+#SBATCH --error=/mnt/weka/home/haolong.jia/attn/slurm/nsa_8_16_mid.err   # 标准错误日志文件路径
 #SBATCH --exclude=fs-mbz-gpu-[290,149]
 source activate                    # 初始化conda
 conda activate torchtitan         # 激活名为torchtitan的conda环境
@@ -26,18 +27,20 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"
 export TRITON_CACHE_DIR="/tmp/${USER}/.triton_cache"
 mkdir -p "$TRITON_CACHE_DIR"
 
-# # 优化NCCL通信设置
-# export NCCL_DEBUG=INFO                # 启用NCCL调试信息，帮助排查问题
-# export NCCL_BUFFSIZE=16777216         # 增加NCCL缓冲区大小到16MB (默认通常是4MB)
-# # export NCCL_SOCKET_IFNAME=eth0      # 注释掉这行，让NCCL自动选择网络接口
-# export NCCL_IB_DISABLE=0              # 确保InfiniBand支持启用
-# export NCCL_P2P_DISABLE=0             # 确保节点间P2P通信启用
-# export NCCL_MIN_NCHANNELS=8           # 增加最小通道数
-# export NCCL_NSOCKS_PERTHREAD=8        # 每个线程套接字数
-# export NCCL_RINGS_CHECK_TIMEOUT=45    # 增加环检查超时时间
+# 优化NCCL通信设置
+export NCCL_DEBUG=INFO                # 启用NCCL调试信息，帮助排查问题
+export NCCL_BUFFSIZE=16777216         # 增加NCCL缓冲区大小到16MB (默认通常是4MB)
+# export NCCL_SOCKET_IFNAME=eth0      # 注释掉这行，让NCCL自动选择网络接口
+export NCCL_IB_DISABLE=0              # 确保InfiniBand支持启用
+export NCCL_P2P_DISABLE=0             # 确保节点间P2P通信启用
+export NCCL_MIN_NCHANNELS=8           # 增加最小通道数
+export NCCL_NSOCKS_PERTHREAD=8        # 每个线程套接字数
+export NCCL_RINGS_CHECK_TIMEOUT=45    # 增加环检查超时时间
+export NCCL_TIMEOUT=480              # 增加NCCL操作超时到8分钟（默认是120秒）
+export NCCL_ASYNC_ERROR_HANDLING=3    # 设置异步错误处理级别
 
 # 定义分布式训练参数
-NNODES=8                             # 改为4，与SLURM请求节点数匹配
+NNODES=2                             # 改为2，与SLURM请求节点数匹配
 GPUS_PER_NODE=8                      # 每个节点的GPU数量
 LOG_RANK=${LOG_RANK:-0}              # 日志等级,默认为0
 
@@ -64,7 +67,7 @@ DISTRIBUTED_ARGS=(
 set -ex  # 打开shell的错误检查和命令回显
 
 # 设置配置文件路径
-TOML_NAME=nsa_16_16
+TOML_NAME=nsa_8_16
 CONFIG_FILE=${CONFIG_FILE:-"./train_configs/${TOML_NAME}.toml"}
 
 # 处理额外的命令行参数
