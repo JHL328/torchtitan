@@ -106,6 +106,18 @@ llama3_configs = {
         nsa_block_size=64,
         nsa_num_blocks=16,
         nsa_window_size=64,
+        nsa_qkv_bias=False,
+        use_triton_kernel=True,
+        compress_block_sliding_stride=4,
+        compress_block_overlap_len=0,
+        num_compressed_mem_kv=1,
+        causal=True,
+        norm=True,
+        use_diff_topk=False,
+        query_heads_share_selected_kv=True,
+        compress_mlp=None,
+        compress_mlp_expand_factor=1.0,
+        strategy_combine_mlp=None,
     ),
     "1B_12_16": TransformerModelArgs(
         dim=2048,
@@ -218,7 +230,6 @@ register_train_spec(
         build_lr_schedulers_fn=build_lr_schedulers,
     )
 )
-
 
 register_train_spec(
     TrainSpec(

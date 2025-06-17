@@ -1,5 +1,5 @@
 [job]
-dump_folder = "./outputs/nsa_1b_16_16"
+dump_folder = "/mnt/sharefs/users/haolong.jia/attn/ckpts/nsa_16_16"
 description = "llama3 with NSA, ratio 1.0 (16 NSA block)"
 
 [profiling]
@@ -17,14 +17,14 @@ enable_wandb = true
 name = "llama3_nsa"
 flavor = "nsa_1B_16_16"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
-tokenizer_path = "/lustrefs/users/haolong.jia/train/attn/tokenizer/tokenizer.model"
+tokenizer_path = "/mnt/weka/home/haolong.jia/opt/model/tokenizer.model"
 
 [optimizer]
 name = "AdamW"
 lr = 3e-4
 
 [training]
-batch_size = 8 # macro_batch_size
+batch_size = 4 # macro_batch_size
 seq_len = 4096
 warmup_steps = 2000  # lr scheduler warm up
 max_norm = 1.0  # grad norm clipping
@@ -34,7 +34,7 @@ data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
 compile = false
 dataset = "fineweb_edu_100B"
-gradient_accumulation_steps = 8 # 4 * 32 * 4 = 512
+gradient_accumulation_steps = 4 # 4 * 32 * 4 = 512
 
 [experimental]
 context_parallel_degree = 1
@@ -50,7 +50,7 @@ export_dtype = "float32"
 async_mode = "disabled" # ["disabled", "async", "async_with_pinned_mem"]
 
 [activation_checkpoint]
-mode = 'selective'  # ['none', 'selective', 'full']
+mode = 'none'  # ['none', 'selective', 'full']
 selective_ac_option = 'op'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
 
 [float8]

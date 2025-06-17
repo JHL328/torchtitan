@@ -1,5 +1,5 @@
 [job]
-dump_folder = "./outputs/llama3_1b"
+dump_folder = "/mnt/sharefs/users/haolong.jia/attn/ckpts/original_llama3_1b"
 description = "Llama 3 1B training"
 
 [profiling]
@@ -17,7 +17,7 @@ enable_wandb = true
 name = "llama3"
 flavor = "1B"
 norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm
-tokenizer_path = "/lustrefs/users/haolong.jia/train/attn/tokenizer/tokenizer.model"
+tokenizer_path = "/mnt/weka/home/haolong.jia/opt/model/tokenizer.model"
 
 [optimizer]
 name = "AdamW"
@@ -50,7 +50,7 @@ export_dtype = "float32"
 async_mode = "disabled" # ["disabled", "async", "async_with_pinned_mem"]
 
 [activation_checkpoint]
-mode = 'selective'  # ['none', 'selective', 'full']
+mode = 'none'  # ['none', 'selective', 'full']
 selective_ac_option = 'op'  # 'int' = ac every positive int layer or 'op', ac based on ops policy
 
 [float8]

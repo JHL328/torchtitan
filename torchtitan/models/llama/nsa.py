@@ -7,10 +7,36 @@ import torch.nn.functional as F
 
 from torchtitan.models.norms import build_norm
 from torchtitan.train_spec import BaseModelArgs, ModelProtocol
-from torchtitan.models.llama.model import precompute_freqs_cis
-
-# 导入 native-sparse-attention-pytorch 的 SparseAttention
+from torchtitan.models.llama.model import precompute_freqs_cis, Attention
 from native_sparse_attention_pytorch.native_sparse_attention import SparseAttention
+
+import sys
+
+def colored(text, color_code):
+    if sys.stdout.isatty():
+        return f"\033[{color_code}m{text}\033[0m"
+    return text
+
+def print_attention_summary(layers):
+    nsa_count = 0
+    std_count = 0
+    print(colored("╔═════════════════════════════════════════════════════╗", "36"), file=sys.stderr)
+    print(colored("║        NSA Transformer Attention Layer Layout       ║", "36"), file=sys.stderr)
+    print(colored("╠══════╦══════════════════════╦═══════════════════════╣", "36"), file=sys.stderr)
+    print(colored("║ LAYER║ ATTENTION TYPE       ║   CATEGORY            ║", "36"), file=sys.stderr)
+    print(colored("╠══════╬══════════════════════╬═══════════════════════╣", "36"), file=sys.stderr)
+    for lid, layer in layers.items():
+        attn_type = type(layer.attention).__name__
+        if "Sparse" in attn_type:
+            category = colored("NSA", "32")
+            nsa_count += 1
+        else:
+            category = colored("Standard", "34")
+            std_count += 1
+        print(f"║ {int(lid):4} ║ {attn_type:<20} ║ {category:^21} ║", file=sys.stderr)
+    print(colored("╚══════╩══════════════════════╩═══════════════════════╝", "36"), file=sys.stderr)
+    print(colored(f"Total layers: {len(layers)} | NSA: {nsa_count} | Standard: {std_count}", "33"), file=sys.stderr)
+    print("-" * 55, file=sys.stderr)
 
 @dataclass
 class NSATransformerModelArgs(BaseModelArgs):
@@ -47,35 +73,13 @@ class NSATransformerModelArgs(BaseModelArgs):
     strategy_combine_mlp: Any = None
 
 class NSATransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, model_args: NSATransformerModelArgs):
+    def __init__(self, layer_id: int, model_args: NSATransformerModelArgs, attention: nn.Module):
         super().__init__()
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
         self.layer_id = layer_id
         self.num_layers = model_args.n_layers
-
-        # NSA Attention
-        self.attention = SparseAttention(
-            dim=model_args.dim,
-            dim_head=model_args.dim // model_args.n_heads,
-            heads=model_args.n_heads,
-            kv_heads=model_args.n_kv_heads or model_args.n_heads,
-            sliding_window_size=model_args.nsa_window_size,
-            compress_block_size=model_args.nsa_block_size,
-            compress_block_sliding_stride=model_args.compress_block_sliding_stride,
-            selection_block_size=model_args.nsa_block_size,
-            num_selected_blocks=model_args.nsa_num_blocks,
-            num_compressed_mem_kv=model_args.num_compressed_mem_kv,
-            causal=model_args.causal,
-            norm=model_args.norm,
-            use_diff_topk=model_args.use_diff_topk,
-            use_triton_kernel=model_args.use_triton_kernel,
-            query_heads_share_selected_kv=model_args.query_heads_share_selected_kv,
-            compress_mlp=model_args.compress_mlp,
-            compress_mlp_expand_factor=model_args.compress_mlp_expand_factor,
-            strategy_combine_mlp=model_args.strategy_combine_mlp
-        )
-
+        self.attention = attention
         self.feed_forward = FeedForward(
             dim=model_args.dim,
             ffn_hidden_size=model_args.ffn_hidden_size,
@@ -97,7 +101,10 @@ class NSATransformerBlock(nn.Module):
             self.weight_init_std = 0.02 / (2 * self.num_layers) ** 0.5
 
     def forward(self, x, freqs_cis):
-        h = x + self.attention(self.attention_norm(x))
+        if isinstance(self.attention, SparseAttention):
+            h = x + self.attention(self.attention_norm(x))
+        else:
+            h = x + self.attention(self.attention_norm(x), freqs_cis)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -139,11 +146,46 @@ class NSATransformer(nn.Module, ModelProtocol):
             model_args.rope_theta
         ), persistent=True)
         self.layers = nn.ModuleDict()
+        # 均匀分布NSA层
+        if model_args.nsa_ratio == 0:
+            nsa_layer_indices = []
+        elif model_args.nsa_ratio == 1:
+            nsa_layer_indices = list(range(model_args.n_layers))
+        else:
+            num_nsa_layers = round(model_args.n_layers * model_args.nsa_ratio)
+            step_size = model_args.n_layers / num_nsa_layers
+            nsa_layer_indices = [round(i * step_size) for i in range(num_nsa_layers)]
+            nsa_layer_indices = sorted(set([i for i in nsa_layer_indices if i < model_args.n_layers]))
         for layer_id in range(model_args.n_layers):
-            self.layers[str(layer_id)] = NSATransformerBlock(layer_id, model_args)
+            if layer_id in nsa_layer_indices:
+                attention = SparseAttention(
+                    dim=model_args.dim,
+                    dim_head=model_args.dim // model_args.n_heads,
+                    heads=model_args.n_heads,
+                    kv_heads=model_args.n_kv_heads or model_args.n_heads,
+                    sliding_window_size=model_args.nsa_window_size,
+                    compress_block_size=model_args.nsa_block_size,
+                    compress_block_sliding_stride=model_args.compress_block_sliding_stride,
+                    selection_block_size=model_args.nsa_block_size,
+                    num_selected_blocks=model_args.nsa_num_blocks,
+                    num_compressed_mem_kv=model_args.num_compressed_mem_kv,
+                    causal=model_args.causal,
+                    norm=model_args.norm,
+                    use_diff_topk=model_args.use_diff_topk,
+                    use_triton_kernel=model_args.use_triton_kernel,
+                    query_heads_share_selected_kv=model_args.query_heads_share_selected_kv,
+                    compress_mlp=model_args.compress_mlp,
+                    compress_mlp_expand_factor=model_args.compress_mlp_expand_factor,
+                    strategy_combine_mlp=model_args.strategy_combine_mlp
+                )
+            else:
+                attention = Attention(model_args)
+            self.layers[str(layer_id)] = NSATransformerBlock(layer_id, model_args, attention=attention)
         self.norm = build_norm(model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps)
         self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
         self.init_weights()
+        # 美化打印每层 Attention 类型
+        print_attention_summary(self.layers)
     def init_weights(self, buffer_device: Optional[torch.device] = None):
         buffer_device = buffer_device or self.freqs_cis.device
         with torch.device(buffer_device):

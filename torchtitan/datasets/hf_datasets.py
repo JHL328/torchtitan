@@ -62,7 +62,7 @@ DATASETS = {
         text_processor=_process_c4_like_text,
     ),
     "fineweb_edu_100b": DatasetConfig(
-        path="/lustrefs/users/haolong.jia/train/attn/fwdata/100b.parquet",
+        path="/mnt/sharefs/users/haolong.jia/fineweb_edu_sample_100BT_shuffled.parquet",
         loader=_load_fineweb_edu_100b_dataset,
         text_processor=_process_c4_like_text,
     ),

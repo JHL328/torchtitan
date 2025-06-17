@@ -12,6 +12,5 @@ import torchtitan.models.llama  # noqa: F401
 
 model_name_to_tokenizer = {
     "llama3": "tiktoken",
-    "llama3_linear": "tiktoken",
     "llama3_nsa": "tiktoken"
 }

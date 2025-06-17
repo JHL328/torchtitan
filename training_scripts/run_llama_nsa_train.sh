@@ -5,18 +5,18 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# SLURM作业配置
-#SBATCH --partition=main          # 指定要使用的计算分区
-#SBATCH --job-name=nsa_8_16       # 作业名称
-#SBATCH --nodes=1                   # 请求1个计算节点
-#SBATCH --ntasks=1                  # 总共运行1个任务
-#SBATCH --ntasks-per-node=1         # 每个节点1个任务
-#SBATCH --gpus-per-task=8           # 每个任务分配8个GPU
-#SBATCH --cpus-per-task=96         # 每个任务分配96个CPU核心
-#SBATCH --mem=0                     # 内存设为0表示使用节点所有可用内存
-#SBATCH --gres=gpu:8                # 每个节点需要8个GPU资源
-#SBATCH --output=/lustrefs/users/haolong.jia/train/attn/slurm/%x.out  # 标准输出日志文件路径
-#SBATCH --error=/lustrefs/users/haolong.jia/train/attn/slurm/%x.err   # 标准错误日志文件路径
+# config for slurm
+#SBATCH --partition=main          # partition
+#SBATCH --job-name=eval       # job name
+#SBATCH --nodes=8                   # request 8 nodes
+#SBATCH --ntasks=8                  # total 8 task
+#SBATCH --ntasks-per-node=1         # 1 task per node
+#SBATCH --gpus-per-task=8           # 8 gpus per task
+#SBATCH --cpus-per-task=96         # 96 cpus per task
+#SBATCH --mem=500G                     # 500G memory
+#SBATCH --gres=gpu:8                # 8 gpus per node
+#SBATCH --output=/mnt/weka/home/haolong.jia/attn/slurm/%x.out  # stdout
+#SBATCH --error=/mnt/weka/home/haolong.jia/attn/slurm/%x.err   # stderr
 
 
 set -ex
@@ -48,6 +48,6 @@ export WANDB_RUN_NAME="${TOML_NAME}"
 
 # 使用srun启动torchrun
 PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
-srun torchrun --nproc_per_node=${NGPU} --nnodes=1 --rdzv_backend c10d --rdzv_endpoint="localhost:29500" \
+srun torchrun --nproc_per_node=${NGPU} --nnodes=8 --rdzv_backend c10d --rdzv_endpoint="${SLURM_NODELIST%%,*}:29500" \
 --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
 train.py --job.config_file ${CONFIG_FILE} $overrides
